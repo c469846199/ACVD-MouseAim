@@ -61,8 +61,33 @@ def _find_pid_by_prefix(prefix: str) -> int | None:
     return None
 
 
+def _exe_stem_of_pid(pid: int) -> str | None:
+    """通过进程句柄查 exe 名（去 .exe 后缀，小写），拿不到返回 None。
+
+    用 OpenProcess + QueryFullProcessImageNameW，**不走进程枚举** ——
+    在「枚举列表被裁剪」的环境里（PyInstaller 产物实测只看到 19 个进程）
+    这条链仍然可用。
+    """
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return None
+    try:
+        size = wt.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        if not kernel32.QueryFullProcessImageNameW(h, 0, buf,
+                                                   ctypes.byref(size)):
+            return None
+        base = buf.value.rsplit("\\", 1)[-1].lower()
+        return base[:-4] if base.endswith(".exe") else base
+    except Exception:
+        return None
+    finally:
+        kernel32.CloseHandle(h)
+
+
 def _find_pid_by_window_title(title_prefix: str) -> int | None:
-    """枚举窗口，按标题开头匹配，反查 pid。
+    """枚举窗口，按标题开头匹配 → 反查 pid **并通过 exe 名二次确认**。
 
     ## 为什么这条链可靠
 
@@ -71,9 +96,19 @@ def _find_pid_by_window_title(title_prefix: str) -> int | None:
         EnumWindows                枚举窗口（与进程列表完全不同的内核对象）
         GetWindowTextW             取窗口标题
         GetWindowThreadProcessId   窗口 → pid
+        OpenProcess + QueryFullProcessImageNameW   pid → exe 名（校验）
 
     实测：进程枚举只看到 19 个进程的 EXE 环境里，EnumWindows 照样能枚举
     26 个窗口并正确拿到 xenia 的 pid。
+
+    ## 为什么必须校验 exe 名（踩过的坑）
+
+    只看窗口标题会误中。实测踩坑：桌面上有个**文件夹**叫 xenia-netplay，
+    它的资源管理器窗口标题就是 `xenia-netplay`，pid 是 explorer.exe 的 ——
+    标题匹配完全合法，但那是文件夹窗口，不是模拟器。
+
+    所以拿到 pid 后再查一次它的 exe 名，必须同样以 key 开头才认。
+    explorer 的 exe 名是 `explorer`，不匹配 `xenia`，被排除。
 
     ## 为什么用「开头匹配」而不是「包含匹配」
 
@@ -82,7 +117,7 @@ def _find_pid_by_window_title(title_prefix: str) -> int | None:
         Xenia 鼠标视角控制脚本方案 — DeepSeek Harness    ← 浏览器/Harness
 
     用 `in` 包含匹配会误中它（实测 pid 拿到 22692 而不是 10776）。
-    开始匹配能排除：真目标标题是 `Xenia-edge` 或 `Xenia-canary-netplay`，
+    开头匹配能排除：真目标标题是 `Xenia-edge` / `Xenia-canary-netplay`，
     干扰项是 `Xenia `（Xenia 后面跟空格），前缀不同。
 
     ## 为什么前缀参数不能写死
@@ -92,8 +127,8 @@ def _find_pid_by_window_title(title_prefix: str) -> int | None:
         Xenia-edge (edge@16aa48a96 on Nov  7 2026)         ← Edge 分支
         Xenia-canary-netplay (netplay_canary_experimental@b5f6f6ed6 ...)  ← Netplay 分支
 
-    所以调用方传的是 "xenia" 这个**公共开头**，本函数负责排除
-    「xenia 后面跟空格」的干扰项（见 _MATCH_TAIL）。
+    所以调用方传 "xenia" 这个公共开头，本函数负责两件事：
+    排除「xenia 后跟空格」的标题，以及校验 exe 名。
 
     ## 局限
 
@@ -112,16 +147,23 @@ def _find_pid_by_window_title(title_prefix: str) -> int | None:
         buf = ctypes.create_unicode_buffer(n + 1)
         user32.GetWindowTextW(hwnd, buf, n + 1)
         low = buf.value.lower()
-        # 必须以 key 开头，并且紧跟的分隔符不是空格 ——
-        # Xenia 各分支都用连字符连接（xenia-edge / xenia-canary-netplay），
-        # 而人写的标题通常是 "Xenia 鼠标视角..."（空格）。这一条把两者分开。
-        if low.startswith(key) and len(low) > len(key) and not low[len(key)].isspace():
-            pid = wt.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            if pid.value:
-                hit[0] = pid.value
-                return False            # 找到就停
-        return True
+        # 第 1 关：标题必须以 key 开头，且紧跟字符不是空格 ——
+        # Xenia 各分支用连字符连接（xenia-edge / xenia-canary-netplay），
+        # 人写的标题通常是 "Xenia 鼠标视角..."（空格）。这一条把两者分开。
+        if not (low.startswith(key) and len(low) > len(key)
+                and not low[len(key)].isspace()):
+            return True
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return True
+        # 第 2 关：exe 名也要以 key 开头。
+        # 排除「文件夹窗口标题恰好叫 xenia-netplay」这类干扰（见文档）。
+        stem = _exe_stem_of_pid(pid.value)
+        if stem is None or not stem.startswith(key):
+            return True
+        hit[0] = pid.value
+        return False                    # 找到就停
 
     try:
         user32.EnumWindows(_ENUM_PROC(cb), 0)
