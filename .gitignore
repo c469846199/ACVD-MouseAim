@@ -1,0 +1,72 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ---- 虚拟环境 ----
+venv/
+.venv/
+ENV/
+env/
+
+# ---- 运行产物（不提交，含玩家实时操作数据）----
+*.log
+*.err
+mapper.out.log
+mapper.err.log
+mapper_stall.txt
+trace_*.csv
+cross_trace.csv
+aim_cam.json
+
+# ---- 本地文档（含个人环境信息，不发布）----
+PROJECT_STATUS.md
+REINSTALL.md
+README_EXE.md
+
+# ---- 已删除代码的归档（保留在本地，不进版本库）----
+_archive/
+
+# ---- 逆向探针的中间结果 ----
+state/
+scratch/
+*.bak
+*.bak-*
+*.bak_*
+
+# ---- 打包中间产物 ----
+build/
+dist/
+*.spec.bak
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---- 本地配置（各人不同，不该进版本库）----
+# 注意：keymap.json 和 tune.json 是**默认配置**，需要提交，
+# 让用户拿到就能跑。他们的个人修改由 git 自己处理。
+!keymap.json
+!tune.json

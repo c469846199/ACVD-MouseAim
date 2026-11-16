@@ -1,0 +1,25 @@
+// ===================================================================
+//  ACVD 手感参数（本文件由 tools\tune.py 生成，也可手改）
+//  改完生效：管道命令 reload
+// ===================================================================
+{
+  "dead": 0.0,
+  "full_stick_angle": 12.0,
+  "pitch_limit": 70.0,
+  "smooth": 1.0,
+  "stick_floor": 0.0,
+  "curve_gamma": 1.0,
+  "input_window": 0.15,
+  "speed_boost": 0.0,
+  "speed_ref": 1500.0,
+  "speed_tau": 0.06,
+  "speed_gamma": 1.0,
+  "ff_gain": 1.0,
+  "rate_max": 41.0,
+  "game_deadzone": 0.44,
+  "err_dead": 0.25,
+  "dead_px": 80.0,
+  "cross_alpha": 200,
+  "button_hold": 0.025,
+  "pool_cap": 4000.0
+}

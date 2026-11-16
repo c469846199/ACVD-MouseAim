@@ -1,0 +1,67 @@
+// ===================================================================
+//  ACVD 键位文件（支持 // 注释，中文随便写）
+//
+//  改完生效：给 mapper 发一条管道命令 reload，不用重启
+//  不想手改就跑向导：  python tools\rebind.py
+//
+//  可用名字：
+//    mouse_left 鼠标左键   mouse_right 鼠标右键   mouse_middle 鼠标中键
+//    scrolllock 滚动锁定   lshift rshift   lctrl rctrl   space tab enter esc
+//    f1 ~ f24              up down left right          num0 ~ num9
+//    标点直接写 ; = , - . / （也可写 semicolon comma period slash）
+// ===================================================================
+{
+  // ---------- 四个动作键 ----------
+  "a": "space",                    // A 键：确认 / 交互
+  "b": "c",                        // B 键：取消 / 后退
+  "x": "lshift",                   // X 键（你改成了左 Shift）
+  "y": "v",                        // Y 键
+
+  // ---------- 肩键 ----------
+  "lb": "tab",                     // LB 左肩：切换武器
+  "rb": "f",                       // RB 右肩
+
+  // ---------- 扳机（可绑多个键，用 [ ] 列出来）----------
+  // 鼠标左右键重新绑回扳机。之前"点鼠标会转视角"的真正原因是键名冲突
+  // （keynames.MOUSE 里多余的 "left"/"right" 让方向键绑定变成了鼠标键），
+  // 已修复，与扳机本身无关。
+  "lt": ["q", "mouse_left"],       // LT 左扳机：Q 或 鼠标左键
+  "rt": ["e", "mouse_right"],      // RT 右扳机：E 或 鼠标右键
+
+  // ---------- 摇杆按下 ----------
+  "ls": ["lctrl", "rctrl"],        // LS 左摇杆按下（你改成了左右 Ctrl）
+  "rs": "mouse_middle",            // RS 右摇杆按下：鼠标中键（若也不需要请改成键盘键）
+
+  // ---------- 中键区 ----------
+  "start": "x",                    // START：X 字母键
+  "back": "z",                     // BACK：Z 键
+
+  // ---------- 左摇杆（移动 / 推进）----------
+  "left_up": "w",                  // 前
+  "left_down": "s",                // 后
+  "left_left": "a",                // 左
+  "left_right": "d",               // 右
+
+  // ---------- 右摇杆（没开鼠标闭环时用来转视角）----------
+  // 注意：这四个是**右摇杆**，不是手柄十字键。名字里的 right 指 right stick。
+  "right_up": "up",                // ↑
+  "right_down": "down",            // ↓
+  "right_left": "left",            // ←
+  "right_right": "right",          // →
+
+  // ---------- 手柄十字键（D-Pad）----------
+  // 以前一直留空。四个方向默认不绑，写哪个绑哪个（"g" = 键盘 G）。
+  "dpup": [],                      // D-Pad 上：未绑
+  "dpdown": "g",                   // D-Pad 下：G 键
+  "dpleft": [],                    // D-Pad 左：未绑
+  "dpright": [],                   // D-Pad 右：未绑
+
+  // ---------- mapper 自己的热键 ----------
+  // 警告：F3~F8 / F11 / F12 / Esc / Pause 被 xenia-edge 硬编码占用了，
+  //       绑到这些键会同时触发 Edge 的功能（F7=性能面板、F12=截图、F8=调试设置）
+  "hotkey_calibrate": "f1",        // F1：重新标定火控圈（进关卡后按）
+  "hotkey_recenter": "f2",         // F2：准星归中
+  "hotkey_pause": "f9",            // F9：暂停 / 恢复映射
+  "hotkey_force": "f10",           // F10：强制映射（无视焦点，菜单里也能操作）
+  "hotkey_quit": "scrolllock"      // ScrollLock：退出 mapper
+}
