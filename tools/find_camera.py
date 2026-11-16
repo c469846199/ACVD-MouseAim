@@ -91,9 +91,238 @@ SCALE_MIN, SCALE_MAX = 0.5, 2.0
 FOV_MIN, FOV_MAX = 5.0, 130.0
 POS_MIN_ABS = 50.0              # 世界坐标：|x| 或 |z| 应大于它
 
-OUT_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "cam_addr.json")
+def _project_root() -> str:
+    """返回配置文件的落点目录。
+
+    ## 为什么不能直接用 __file__ 往上走
+
+    源码模式：本文件在 <项目根>/tools/，往上两级就是项目根 ✓
+
+    EXE 模式（PyInstaller onedir）：本文件会被打进
+    <exe目录>/_internal/find_camera.py，往上两级是 _internal ——
+    而配置要写在 **exe 同级**（用户能看见、能删掉重定位的地方）。
+    所以 frozen 时取 sys.executable 的目录。
+
+    判断依据 `sys.frozen` 是 PyInstaller 注入的，源码模式没有这个属性。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+OUT_PATH = os.path.join(_project_root(), "cam_addr.json")
+
+
+# ============================================================================
+# Xenia 输入配置修正
+#
+# ## 为什么定位脚本要管这件事
+#
+# 相机地址对了、mapper 也在推杆，但游戏里「键盘鼠标全都没反应」——
+# 这个坑实测踩过，根因在 Xenia 侧的输入后端选错：
+#
+#     hid = "any"            输入后端不确定，可能没选到 XInput 设备
+#     keyboard_mode = 0/1/2  键盘模拟手柄，会和虚拟手柄抢同一个端口
+#
+# 正确配置是：
+#
+#     hid = "xinput"         只用 XInput，也就是我们创建的虚拟手柄
+#     keyboard_mode = 0      键盘交给 mapper 处理，Xenia 自己不碰
+#
+# ## 为什么改完必须重启 Xenia
+#
+# Xenia 运行期间和退出时都会把内存里的 cvar 写回配置文件。所以在它
+# 运行时改文件，改动会被覆盖（实测：改完启动，文件立刻变回 "any"）。
+# 只能先关掉它。
+# ============================================================================
+
+def _find_xenia_config() -> str | None:
+    """从运行中（或刚退出）的 Xenia 进程定位它的配置文件。
+
+    优先用进程的 exe 路径 → 同目录找 *.config.toml。
+    进程不在时，尝试常见位置。
+    """
+    candidates = []
+
+    # 1. 从进程拿 exe 路径（最准）
+    pid = _find_pid_by_prefix("xenia") or _find_pid_by_window_title("xenia")
+    if pid is not None:
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-Process -Id {pid} -EA SilentlyContinue).Path"],
+                capture_output=True, text=True, timeout=10)
+            exe = r.stdout.strip()
+            if exe and os.path.exists(exe):
+                d = os.path.dirname(exe)
+                candidates.append(d)
+        except Exception:
+            pass
+
+    # 2. 常见便携位置：本程序旁边、上一级
+    root = _project_root()
+    candidates += [root, os.path.dirname(root)]
+
+    for d in candidates:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            if n.endswith(".toml") and "config" in n.lower():
+                return os.path.join(d, n)
+    return None
+
+
+def _read_text(p: str) -> str:
+    with open(p, encoding="utf-8", errors="ignore") as f:
+        return f.read()
+
+
+def ensure_xenia_input(verbose: bool = True, auto_fix: bool = False) -> int:
+    """检查（可选修正）Xenia 的输入配置。
+
+    返回：
+        0  配置可用（无需改动）
+        1  已修正（需要重启 Xenia 生效）
+        2  找不到配置文件
+        3  修正失败 / 无法安全修正
+
+    ## 判断标准：什么算「可用」
+
+        hid
+            "any"        ✓ 自动尝试所有后端，实测能识别 XInput 设备
+            "xinput"     ✓ 明确指定，最直接
+            "sdl"        ✓ 能识别 XInput 设备（Edge 版就用这个）
+            "winkey"     ✗ 只用键盘模拟，收不到虚拟手柄
+            "nop"        ✗ 禁用输入
+
+        keyboard_mode
+            0 (Disabled)    ✓ 键盘全权交给 mapper
+            1 (Enabled)     ⚠ Xenia 自己把键盘映射成手柄，会和虚拟手柄
+                              抢同一个端口，表现是「按键触发两次」
+            2 (Passthrough) ⚠ 同上，且需要已连接手柄
+
+    ## 为什么默认不自动改（auto_fix=False）
+
+    实测踩过：hid="any" 在某些环境下本来就是能用的。擅自改成 "xinput"
+    属于「在你不知道的地方改你的东西」，而且 Xenia 运行期间改文件会被
+    它的内存值覆盖，看上去像改成功了其实没变。
+
+    所以默认只**报告**，把判断权还给用户。确实需要改时加 --fix-input。
+
+    ## 为什么改完必须重启 Xenia
+
+    Xenia 运行期间和退出时都会把内存里的 cvar 写回配置文件。所以在它
+    运行时改文件，改动会被覆盖（实测：改完启动，文件立刻变回 "any"）。
+    """
+    cfg = _find_xenia_config()
+    if cfg is None:
+        if verbose:
+            print("  ⚠ 找不到 Xenia 的配置文件（.toml）")
+            print("    如果是便携版，配置文件应该在 exe 同级目录。")
+        return 2
+
+    if verbose:
+        print(f"  Xenia 配置: {cfg}")
+
+    try:
+        text = _read_text(cfg)
+    except OSError as e:
+        if verbose:
+            print(f"  ⚠ 读不了配置文件: {e}")
+        return 3
+
+    import re
+
+    m_hid = re.search(r'(?m)^\s*hid\s*=\s*"([^"]*)"', text)
+    m_kb = re.search(r'(?m)^\s*keyboard_mode\s*=\s*(\d+)', text)
+
+    cur_hid = m_hid.group(1) if m_hid else None
+    cur_kb = int(m_kb.group(1)) if m_kb else None
+
+    if verbose:
+        print(f"  当前 hid           = {cur_hid!r}")
+        print(f"  当前 keyboard_mode = {cur_kb}")
+
+    HID_OK = ("any", "xinput", "sdl")
+    hid_ok = cur_hid in HID_OK
+    kb_ok = (cur_kb == 0)
+
+    if hid_ok and kb_ok:
+        if verbose:
+            print("  ✓ 输入配置可用")
+            if cur_hid == "any":
+                print("    （hid=any 会自动选后端，实测能用；"
+                      "想更明确可以改成 \"xinput\"）")
+        return 0
+
+    # ---- 有问题：先报告 ----
+    if verbose:
+        print()
+        if not hid_ok:
+            print(f"  ✗ hid = {cur_hid!r} 收不到虚拟手柄")
+            print(f"    应该是 \"any\" / \"xinput\" / \"sdl\" 之一")
+        if not kb_ok:
+            print(f"  ⚠ keyboard_mode = {cur_kb}：Xenia 自己在把键盘映射成手柄，"
+                  f"会和虚拟手柄抢端口")
+            print(f"    建议改成 0（Disabled），键盘交给 mapper 处理")
+
+    if not auto_fix:
+        if verbose:
+            print()
+            print("  这是只读检查，没有改动配置。")
+            print("  要自动修正，运行：")
+            print("      python tools\\find_camera.py --fix-input")
+            print("  （必须先完全关闭 Xenia，否则改动会被它的内存值覆盖）")
+        return 3
+
+    # ---- auto_fix：备份后改 ----
+    pid = _find_pid_by_prefix("xenia") or _find_pid_by_window_title("xenia")
+    if pid is not None:
+        if verbose:
+            print()
+            print("  ! Xenia 正在运行，现在改会被它退出时的写回覆盖。")
+            print("    请先完全关闭 Xenia 再运行本脚本。")
+        return 3
+
+    try:
+        import shutil
+        import time as _t
+        bak = f"{cfg}.bak_{_t.strftime('%Y%m%d_%H%M%S')}"
+        shutil.copy2(cfg, bak)
+        if verbose:
+            print(f"  已备份: {os.path.basename(bak)}")
+    except OSError:
+        bak = None
+
+    new = text
+    if m_hid and not hid_ok:
+        new = re.sub(r'(?m)^(\s*hid\s*=\s*)"[^"]*"', r'\1"xinput"', new, count=1)
+    if m_kb and not kb_ok:
+        new = re.sub(r'(?m)^(\s*keyboard_mode\s*=\s*)\d+', r'\g<1>0', new, count=1)
+
+    try:
+        # 无 BOM UTF-8：Xenia 的 toml 解析器遇到 BOM 会把第一个键读成乱码
+        with open(cfg, "w", encoding="utf-8", newline="\n") as f:
+            f.write(new)
+    except OSError as e:
+        if verbose:
+            print(f"  ⚠ 写不了配置文件: {e}")
+        return 3
+
+    if verbose:
+        print()
+        print("  已修正：")
+        if not hid_ok:
+            print(f'    hid:           {cur_hid!r} → "xinput"')
+        if not kb_ok:
+            print(f"    keyboard_mode: {cur_kb} → 0（键盘交给 mapper）")
+        print()
+        print("  ★ 现在启动 Xenia 才生效 ★")
+
+    return 1
 
 
 def _fmt_addr(a: int) -> str:
@@ -241,18 +470,44 @@ def main() -> int:
                     help="扩大扫描范围到 16 MB（默认只扫 2 MB）")
     ap.add_argument("--dry", action="store_true",
                     help="只报告，不写文件")
+    ap.add_argument("--fix-input", action="store_true",
+                    help="只修正 Xenia 的输入配置（hid=xinput / 键盘不抢端口），"
+                         "不做相机定位。键鼠完全没反应时先跑这条")
     a = ap.parse_args()
 
     print("=" * 70)
     print("  相机地址定位")
     print("=" * 70)
     print()
+
+    # ---- 只修 Xenia 输入配置，不做定位 ----
+    # 用途：键鼠完全没反应时先排除模拟器侧配置问题。
+    # 这条路径**不需要游戏在关卡内**，甚至 Xenia 没启动也能修。
+    if a.fix_input:
+        print("  只检查 Xenia 输入配置（不定位相机）")
+        print()
+        rc = ensure_xenia_input(verbose=True, auto_fix=True)
+        print()
+        if rc == 1:
+            print("  配置已修正。请**完全重启 Xenia**，然后进关卡重新运行：")
+            print("      python tools\\find_camera.py")
+        elif rc == 0:
+            print("  配置本来就正确，无需改动。")
+        return 0 if rc in (0, 1) else 1
+
     print("  前提：游戏必须已经在**关卡内**（训练场也算）。")
     print("        标题画面 / 菜单 / 机库里相机结构还没初始化。")
     print()
 
     proc, guest_base = _conn()
     if proc is None:
+        # 连不上进程说明 Xenia 没启动。此时仍然可以帮忙修输入配置，
+        # 免得用户以为「连不上就什么都做不了」。
+        print()
+        print("-" * 70)
+        print("  虽然没连上 Xenia，仍可检查输入配置")
+        print("-" * 70)
+        ensure_xenia_input(verbose=True)
         return 2
 
     print(f"  进程已连接   guest base = {_fmt_addr(guest_base)}")
@@ -367,9 +622,24 @@ def main() -> int:
         _save(target, verified=bool(verified))
         print()
         print(f"  已写入：{OUT_PATH}")
-        print("  现在可以直接启动 mapper 了。")
 
     proc.close()
+
+    # ---- 顺带修正 Xenia 的输入配置 ----
+    #
+    # 相机地址对了还不够：Xenia 必须只收虚拟手柄（hid=xinput），
+    # 并且不能用自己的键盘模拟（keyboard_mode=0）去抢同一个端口。
+    # 这两条不对的表现就是「键鼠全都没反应」，而玩家根本想不到
+    # 是模拟器侧的配置问题。所以定位脚本顺手把它修好。
+    if not a.dry:
+        print()
+        print("-" * 70)
+        print("  Xenia 输入配置检查")
+        print("-" * 70)
+        rc = ensure_xenia_input(verbose=True, auto_fix=False)
+        print()
+
+    print("  完成。检查完上面的提示后正常启动 mapper 即可。")
     return 0
 
 

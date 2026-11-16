@@ -65,8 +65,12 @@ import os
 
 # 项目根 = 本 spec 文件所在目录（tools/）的上一级。
 # 不要写死绝对路径：这个 spec 要能跟着仓库一起被任何人打包。
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOLS = os.path.join(ROOT, "tools")
+#
+# ⚠ 用 SPECPATH 而不是 __file__：PyInstaller 6.x 用 exec() 执行 spec，
+# __file__ 没有定义，会直接 NameError。SPECPATH 是 PyInstaller 注入的
+# 「spec 文件所在目录」，等价且可靠。
+ROOT = os.path.dirname(SPECPATH)
+TOOLS = SPECPATH
 
 # ---- vgamepad：DLL 是运行时 ctypes 加载的，必须显式收集（见「不能动 3」）----
 datas = []
@@ -91,9 +95,12 @@ for _py in glob.glob(os.path.join(ROOT, "acvd", "**", "*.py"), recursive=True):
 print(f"[spec] 打包 acvd 源码 {_src_count} 个（供分层守卫做 AST 检查）")
 
 # ---- 顶层入口 + 整个 acvd 包（见「不能动 2」）----
-# keymap_ui 同样要列进去：它只被 exe_entry 在函数体内延迟 import，
-# 静态分析看不到，漏了它 `ACVD.exe keys` 会 ImportError。
-hidden = ["mapper", "panel", "keymap_ui", "exe_entry"] + collect_submodules("acvd")
+# keymap_ui / find_camera 同样要列进去：它们只被 exe_entry 在函数体内
+# 延迟 import，静态分析看不到，漏了会 ImportError：
+#   keymap_ui   → ACVD.exe keys 炸
+#   find_camera → ACVD.exe locate 炸（首次定位相机地址，不能缺）
+hidden = ["mapper", "panel", "keymap_ui", "find_camera",
+          "exe_entry"] + collect_submodules("acvd")
 
 a = Analysis(
     [os.path.join(TOOLS, "exe_entry.py")],

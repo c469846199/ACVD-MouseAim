@@ -18,7 +18,7 @@ import time
 from . import control_v2
 from .chan import Alarm, Slot
 from .output import Composer, Watchdog
-from .sensor import CAM_FOV_GUEST, CAM_QUAT_GUEST, Sensor
+from .sensor import Sensor
 from .types import MODE_OFF, MODE_TRACKING, Cfg, Cmd
 
 
@@ -47,11 +47,19 @@ def _load_cam_addr(path: str | None = None) -> tuple[int, int] | None:
     """
     import json
     import os
+    import sys
 
     if path is None:
-        # engine.py 在 acvd/core/ 里，往上三级是项目根
-        root = os.path.dirname(os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))))
+        # 源码模式：本文件在 <项目根>/acvd/core/，往上三级是项目根。
+        # EXE 模式（PyInstaller onedir）：本文件在
+        # <exe目录>/_internal/acvd/core/，往上三级是 _internal ——
+        # 但 cam_addr.json 写在 exe 同级（用户能看见的位置），
+        # 所以 frozen 时取 sys.executable 的目录。
+        if getattr(sys, "frozen", False):
+            root = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            root = os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))
         path = os.path.join(root, "cam_addr.json")
     try:
         with open(path, encoding="utf-8") as f:
@@ -225,13 +233,16 @@ class AimEngine:
     def status(self) -> str:
         s = self.snapshot()
         st = self.sensor.stats()
+        # 地址用 sensor 上的实例值，不是模块常量 —— 否则 status 永远
+        # 显示内置默认的 0x405EA750/0x405EA770，即使实际在用 cam_addr.json
+        # 里配置的地址。排查时会误以为「配置没生效」。
         return (f"auto_state={self._PANEL.get(s['mode'], 'idle')} "
                 f"auto_scene=0 auto_cand=1 auto_votes=0 "
-                f"auto_cam=0x{CAM_QUAT_GUEST:012X} "
+                f"auto_cam=0x{self.sensor.cam_quat:012X} "
                 f"auto_try={s['reads']} "
                 f"auto_on={1 if self.enabled else 0} "
                 f"engine_mode={s['mode']} "
-                f"addr=0x{CAM_FOV_GUEST:012X} "
+                f"addr=0x{self.sensor.cam_fov:012X} "
                 f"base=0x{self.sensor.base():012X} "
                 f"ctrl={self.ctrl} tau={self.v2cfg.tau:.3f} "
                 f"fps={self.sensor.fps():.0f} "
@@ -249,10 +260,10 @@ class AimEngine:
             "err_p": f.err_p if f else 0.0,
             "ch_x": f.ch_x if f else 0.0,
             "ch_y": f.ch_y if f else 0.0,
-            "addr": CAM_FOV_GUEST,
+            "addr": self.sensor.cam_fov,
             "cand": 1,
             "votes": 0,
-            "cam": CAM_QUAT_GUEST,
+            "cam": self.sensor.cam_quat,
             "reason": "相机固定",
             "cuts": self.watchdog.cuts,
             "reads": st["reads"],

@@ -57,6 +57,7 @@ USAGE = """ACVD 鼠标瞄准（固定相机 · 绝对坐标内核）
   ACVD.exe mapper     只起 mapper（控制台常驻，看日志用）
   ACVD.exe panel      只打开控制面板
   ACVD.exe keys       打开按键映射（全键盘点选改键）
+  ACVD.exe locate     首次定位相机地址（进关卡后跑一次）
   ACVD.exe stop       停止 mapper
   ACVD.exe legacy     旧内核启动（应急回退）
   ACVD.exe --help     显示本说明
@@ -64,7 +65,12 @@ USAGE = """ACVD 鼠标瞄准（固定相机 · 绝对坐标内核）
 配置文件（与本程序同目录，可直接用记事本改）：
   keymap.json     键位与热键
   tune.json       手感参数
-  aim_cam.json    相机地址缓存（自动生成，删掉也能重建）
+  cam_addr.json   相机地址缓存（ACVD.exe locate 生成，删掉会重新用默认值）
+
+关于 locate：相机地址在不同模拟器版本/不同电脑上可能不一样。如果启动后
+发现「鼠标动了但视角不动、准星不出现」，先进入任意关卡或训练场，然后运行
+    ACVD.exe locate
+它会扫出你环境里的真实地址并写入 cam_addr.json，之后正常启动即可。
 
 依赖：ViGEmBus 驱动（虚拟手柄）。没装的话启动时会明确报错。
 """
@@ -354,6 +360,31 @@ def run_keymap_ui() -> int:
     return keymap_ui.main()
 
 
+def run_locate(extra: list[str]) -> int:
+    """首次定位相机地址，写入 cam_addr.json。
+
+    ## 什么时候需要
+
+    相机地址由游戏加载时的内存分配顺序决定。同一台电脑同一个模拟器时
+    稳定，但换模拟器版本、换电脑、加载时序不同就会移位 ——
+    内置默认值 0x405EA750 在那些环境里读不到，表现为「摇杆不动、
+    准星不出现」。
+
+    所以留了这条命令：进关卡后跑一次 ACVD.exe locate，
+    扫出真实地址写进 cam_addr.json，之后 mapper 启动时自动读。
+
+    ## 参数透传
+
+    extra 原样交给 find_camera 的 argparse，所以
+    `ACVD.exe locate --wide` / `--dry` 都能用。
+    """
+    # find_camera 的 main() 自己解析 sys.argv，这里只把参数收拾干净：
+    # 去掉 argv[0]（"locate"）之后的才交给它。
+    sys.argv = [sys.argv[0]] + list(extra)
+    import find_camera
+    return find_camera.main()
+
+
 def run_stop() -> int:
     """让 mapper 优雅退出：发 quit，然后等管道消失确认真退了。"""
     import time
@@ -390,6 +421,8 @@ def main(argv) -> int:
         return run_keymap_ui()
     if what in ("diag", "doctor", "check"):
         return run_diag()
+    if what in ("locate", "findcam", "find_camera", "loc"):
+        return run_locate(argv[1:])     # 后面的参数透传给 find_camera
     if what in ("stop", "quit", "exit"):
         return run_stop()
 
