@@ -117,12 +117,19 @@ def _check_struct(raw: bytes, off: int):
 
     返回 (pos, quat, scale) 或 None。
 
+    **off 指向结构起点（position 的开头）**，不是四元数地址。
     布局（大端 float）：
         +0x00  position  4f   第 4 个必须 ≈1.0（校验位）
         +0x10  quaternion 4f  模长² ≈ 1
         +0x20  scale     4f   前三个在 0.5~2.0
+        +0x30  FOV       1f   5~130
+
+    ⚠ 调用方拿到结果后要把 off 换算成四元数地址（+0x10）再存，
+    因为 sensor.py 的 cam_quat 参数指的是**四元数**的地址，
+    不是结构起点。这个换算踩过坑：直接存起点会让 sensor 把
+    position 当成四元数读，模长必然爆掉，表现为 ok=0。
     """
-    if off + 0x30 > len(raw):
+    if off + 0x34 > len(raw):
         return None
     try:
         p3 = struct.unpack_from(">3f", raw, off)
@@ -188,7 +195,12 @@ def _is_rotating(samples) -> float:
 
 
 def scan(proc, guest_base: int, base: int, size: int):
-    """在 [base, base+size) 内找所有相机结构候选。"""
+    """在 [base, base+size) 内找出所有相机结构。
+
+    返回 (hits, scanned_bytes)，hits 里存的是**四元数地址**
+    （结构起点 + 0x10），因为 sensor.py 的 cam_quat 参数要的是四元数
+    的地址。存结构起点会让后续读取错位（踩过）。
+    """
     hits = []
     CHUNK = 0x40000             # 256 KB 一块
     pos = base
@@ -214,7 +226,8 @@ def scan(proc, guest_base: int, base: int, size: int):
 
                 r = _check_struct(raw, off)
                 if r is not None:
-                    hits.append(pos + off)
+                    # off 是结构起点，四元数在 +0x10
+                    hits.append(pos + off + 0x10)
                 off += 4
         pos += n
 
@@ -245,8 +258,10 @@ def main() -> int:
     print(f"  进程已连接   guest base = {_fmt_addr(guest_base)}")
 
     # ---- 先验证内置默认地址是否可用 ----
+    # 注意：default_quat 是**四元数**地址，而 _check_struct 期望的是
+    # 结构起点，所以要退 0x10 再传。
     default_quat = 0x405EA750
-    raw = proc.read(guest_base + default_quat, 0x30)
+    raw = proc.read(guest_base + default_quat - 0x10, 0x40)
     r = _check_struct(raw, 0) if raw else None
     if r is not None:
         fov = _read_fov(proc, guest_base, default_quat)
@@ -291,7 +306,8 @@ def main() -> int:
         samples = _sample_quat(proc, guest_base, ga)
         delta = _is_rotating(samples)
         fov = _read_fov(proc, guest_base, ga)
-        raw = proc.read(guest_base + ga, 12)
+        # 位置在 quat - 0x10 处（结构起点），不是 quat 本身
+        raw = proc.read(guest_base + ga - 0x10, 12)
         pos = struct.unpack(">3f", raw) if raw and len(raw) >= 12 else (0, 0, 0)
         fov_s = f"{fov:>7.2f}" if fov else f"{'--':>7}"
         moving = " ← 在动" if delta > 1e-4 else ""
@@ -302,6 +318,27 @@ def main() -> int:
 
     print()
 
+    # ---- 去重：同一相机会有多份副本（值完全相同）----
+    # 只保留地址最小的那个，其余视为副本。
+    # 为什么不去掉：副本本身也是合法结构，读哪个都一样；
+    # 但输出里列一堆相同地址会让用户困惑。
+    unique = []
+    seen_vals = set()
+    for ga in hits:
+        s = _sample_quat(proc, guest_base, ga, times=1, gap=0)
+        if not s:
+            continue
+        key = tuple(round(v, 5) for v in s[0])
+        if key in seen_vals:
+            continue
+        seen_vals.add(key)
+        unique.append(ga)
+
+    if len(hits) > len(unique):
+        print(f"  （{len(hits)} 个候选中，{len(hits) - len(unique)} 个是同一"
+              f"结构的副本，值完全相同）")
+        print()
+
     # ---- 决策 ----
     if verified:
         target = verified[0]
@@ -309,8 +346,16 @@ def main() -> int:
         print(f"    （四元数在变化 + FOV 合理，这两条同时满足）")
     elif hits:
         target = hits[0]
-        print(f"  ⚠ 没能确认哪个在动，暂用第一个：{_fmt_addr(target)}")
-        print(f"    如果 mapper 跑起来视角不对，请重新跑本脚本。")
+        fov = _read_fov(proc, guest_base, target)
+        print(f"  相机地址：{_fmt_addr(target)}")
+        if fov is not None:
+            print(f"    ✓ 结构校验通过（FOV = {fov:.1f}°，四元数单位化，"
+                  f"世界坐标有效）")
+            print(f"    · 采样期间视角没有变化，所以没法做「动起来」的确认。")
+            print(f"      这在静止/暂停时是正常的。")
+        else:
+            print(f"    ⚠ FOV 读不到，可能不是相机。")
+            print(f"      如果 mapper 跑起来视角不对，请重跑本脚本。")
     else:
         proc.close()
         return 1

@@ -143,11 +143,11 @@ class Sensor(threading.Thread):
         # 相机地址：参数 > 内置默认。存成实例属性而不是改模块常量，
         # 这样 test_core.py 里「CAM_FOV_GUEST == 0x405EA770」那条断言
         # 仍然成立，默认语义没被动过。
+        #
+        # 日志由装配层（engine.py）打印，这里不打 —— 否则同一条信息
+        # 会出现两次（engine 一次、sensor 一次），看起来像重复初始化。
         self.cam_quat = cam_quat if cam_quat else CAM_QUAT_GUEST
         self.cam_fov = cam_fov if cam_fov else CAM_FOV_GUEST
-        if cam_quat:
-            log(f"[采集] 使用自定义相机地址 "
-                f"quat=0x{self.cam_quat:012X} fov=0x{self.cam_fov:012X}")
 
         self.running = True
         self._fov = 45.0
