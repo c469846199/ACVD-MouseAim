@@ -64,7 +64,7 @@ def main() -> int:
     a = ap.parse_args()
 
     size = {"u8": 1, "u16": 2, "u32": 4, "u64": 8}[a.type]
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     regions = regions_of(proc, a.min_mb)
     print(f"扫描 {len(regions)} 个区域 / {sum(r.size for r in regions)/2**20:.0f} MB "
           f"查找 {a.type} == {a.value}")

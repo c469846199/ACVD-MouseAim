@@ -237,22 +237,52 @@ def _resolve_pid(name_or_pid: str | int) -> int | None:
 
 
 def _find_pid_by_name(name_lower: str) -> list[int]:
-    """用 Toolhelp32 快照找进程，避免依赖 psutil。"""
+    """用 Toolhelp32 快照找进程，**按前缀匹配**，避免依赖 psutil。
+
+    ## 为什么是前缀而不是精确
+
+    Xenia 有多个分支，exe 名各不相同，而且会随构建变化：
+
+        xenia_edge.exe
+        xenia_canary.exe
+        xenia_canary_netplay.exe        ← 多一个后缀
+        xenia_canary_new_xma_alpha_v2.exe
+        xenia_canary_mousehook.exe
+
+    精确匹配只能命中其中之一。调用方传 "xenia" 这样的公共前缀就够了 ——
+    所有分支都以它开头。
+
+    这也和 acvd/focus.py 的 _find_pid_by_prefix / _find_pid_by_window_title
+    使用同一套语义，三处查找的行为一致。
+
+    ## 匹配规则
+
+    去掉 .exe 后缀后，判断 exe 名是否以 name_lower 开头。
+
+        传 "xenia"        → 命中上面全部
+        传 "xenia_edge"   → 只命中 Edge
+        传 "notepad"      → 只命中 notepad
+    """
+    base = name_lower[:-4] if name_lower.endswith(".exe") else name_lower
     TH32CS_SNAPPROCESS = 0x00000002
 
     class PROCESSENTRY32(ctypes.Structure):
         _fields_ = [
-            ("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
-            ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD),
-            ("cntThreads", wt.DWORD), ("th32ParentProcessID", wt.DWORD),
+            ("dwSize", wt.DWORD), ("cntUsage", wt.DWORD),
+            ("th32ProcessID", wt.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+            ("th32ParentProcessID", wt.DWORD),
             ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
             ("szExeFile", wt.CHAR * 260),
         ]
 
     kernel32.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
     kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
-    kernel32.Process32First.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
-    kernel32.Process32Next.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32)]
+    kernel32.Process32First.argtypes = [wt.HANDLE,
+                                        ctypes.POINTER(PROCESSENTRY32)]
+    kernel32.Process32Next.argtypes = [wt.HANDLE,
+                                       ctypes.POINTER(PROCESSENTRY32)]
 
     snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if snap == wt.HANDLE(-1).value or not snap:
@@ -263,8 +293,9 @@ def _find_pid_by_name(name_lower: str) -> list[int]:
         pe.dwSize = ctypes.sizeof(pe)
         ok = kernel32.Process32First(snap, ctypes.byref(pe))
         while ok:
-            exe = pe.szExeFile.decode("mbcs", "replace")
-            if exe.lower() == name_lower or exe.lower() == name_lower + ".exe":
+            exe = pe.szExeFile.decode("mbcs", "replace").lower()
+            stem = exe[:-4] if exe.endswith(".exe") else exe
+            if stem.startswith(base):
                 out.append(pe.th32ProcessID)
             ok = kernel32.Process32Next(snap, ctypes.byref(pe))
     finally:

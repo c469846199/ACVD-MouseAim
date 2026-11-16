@@ -58,7 +58,7 @@ def main() -> int:
     ap.add_argument("--hz", type=float, default=50.0)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     series = {k: [] for k in CANDIDATES}
     t0 = time.perf_counter()
     while time.perf_counter() - t0 < a.seconds:

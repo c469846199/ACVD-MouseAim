@@ -65,7 +65,7 @@ def scan_region(proc, base, size):
 
 
 def main():
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     regs = [r for r in proc.regions() if r.readable and r.size >= 4096]
     print(f"扫描 {len(regs)} 个区域 ...")
     all_hits = []

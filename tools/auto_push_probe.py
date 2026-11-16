@@ -47,7 +47,7 @@ def main() -> int:
     ap.add_argument("--mag", type=float, default=0.9)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     print("推杆前 XInput 槽位:", detect_slots())
 
     pad = VirtualPad()

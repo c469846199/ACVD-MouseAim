@@ -63,7 +63,7 @@ def scan_region(proc, base, size, out, budget_hits=200):
 
 
 def main():
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     regs = [r for r in proc.regions() if r.readable and r.size >= 1024 * 1024]
     print(f"扫描 {len(regs)} 个区域 / {sum(r.size for r in regs)/2**20:.0f} MB")
 

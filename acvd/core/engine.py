@@ -22,11 +22,55 @@ from .sensor import CAM_FOV_GUEST, CAM_QUAT_GUEST, Sensor
 from .types import MODE_OFF, MODE_TRACKING, Cfg, Cmd
 
 
+def _load_cam_addr(path: str | None = None) -> tuple[int, int] | None:
+    """读 cam_addr.json，返回 (quat_guest, fov_guest)。
+
+    ## 为什么放在装配层
+
+    采集层（sensor.py）被分层守卫限制，只许 import
+    math/struct/threading/time + chan/types/gmem，读文件的 json/os
+    会被拦。engine.py 是装配层（Rule 允许 None = 不限制依赖），
+    所以配置读取放在这里，读到之后把结果传给 Sensor。
+
+    ## 相机地址为什么需要外部覆盖
+
+    地址由游戏加载时的内存分配顺序决定。同一台电脑同一个模拟器时稳定，
+    但换模拟器版本、换电脑、加载时序不同就会移位 ——
+    实测：Edge 是 0x405EA750，Netplay 分支配到 0x405F30E0 附近。
+
+    tools/find_camera.py 扫出真实地址后写这个文件，启动时读一次。
+
+    ## 容错
+
+    文件不存在、格式错、数值越界 —— 一律返回 None（用内置默认值），
+    绝不因为配置坏了导致启动失败。
+    """
+    import json
+    import os
+
+    if path is None:
+        # engine.py 在 acvd/core/ 里，往上三级是项目根
+        root = os.path.dirname(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))))
+        path = os.path.join(root, "cam_addr.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        q = int(d["quat_guest"])
+        fov = int(d.get("fov_guest", q + 0x20))
+        if 0 < q < 0x1_0000_0000 and 0 < fov < 0x1_0000_0000:
+            return q, fov
+    except Exception:
+        pass
+    return None
+
+
 class AimEngine:
     def __init__(self, get_proc, get_delta, get_view, cfg: Cfg | None = None,
                  log=print, hz: float = 125.0,
                  is_paused=None, ctrl: str = "v1",
-                 v2: control_v2.V2Cfg | None = None):
+                 v2: control_v2.V2Cfg | None = None,
+                 cam_addr_path: str | None = None):
         self.log = log
         self._snap = Slot()
         self._cmd = Slot()
@@ -52,7 +96,17 @@ class AimEngine:
             _step = None
             state = None
 
-        self.sensor = Sensor(get_proc, self._snap, log=log)
+        # 相机地址：优先用 cam_addr.json 的覆盖值。
+        # 没配置就用内置默认，行为与改造前完全一致。
+        _cam = _load_cam_addr(cam_addr_path)
+        if _cam is not None:
+            log(f"[采集] 使用自定义相机地址 "
+                f"quat=0x{_cam[0]:012X} fov=0x{_cam[1]:012X}"
+                f"（cam_addr.json）")
+
+        self.sensor = Sensor(get_proc, self._snap, log=log,
+                             cam_quat=_cam[0] if _cam else None,
+                             cam_fov=_cam[1] if _cam else None)
         self.composer = Composer(self._snap, self._cmd, self._out,
                                  get_delta, get_view, cfg or Cfg(), log=log,
                                  is_paused=is_paused,

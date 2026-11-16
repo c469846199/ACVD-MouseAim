@@ -84,7 +84,7 @@ def main() -> int:
     ap.add_argument("--min-mono", type=float, default=0.85)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     print("筛热区 ...")
     hot = hot_regions(proc, a.min_mb, a.thresh)
     total = sum(r.size for r in hot)

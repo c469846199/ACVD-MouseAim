@@ -347,9 +347,10 @@ def attach_xenia():
 
     pid = _find_pid_by_prefix("xenia")
     if pid is None:
-        # 窗口标题固定以 "Xenia-edge" 开头（后面是随机的构建/关卡信息），
-        # 用带连字符的前缀匹配，避免误中标题以 "Xenia " 开头的其它窗口。
-        pid = _find_pid_by_window_title("xenia-edge")
+        # 传 "xenia" 这个公共开头：Xenia 各分支的窗口标题都以此开头
+        # （Xenia-edge / Xenia-canary-netplay），而匹配函数内部会排除
+        # 「xenia 后跟空格」的干扰窗口（比如浏览器标题里提到 Xenia）。
+        pid = _find_pid_by_window_title("xenia")
     if pid is None:
         raise RuntimeError("找不到 Xenia 进程（进程枚举与窗口标题匹配都失败）")
     return Process.attach(pid)

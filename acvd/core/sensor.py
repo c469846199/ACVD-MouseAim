@@ -116,11 +116,38 @@ def read_cam(proc, fov_addr: int):
 
 
 class Sensor(threading.Thread):
-    def __init__(self, get_proc, snap_slot: Slot, log=print):
+    def __init__(self, get_proc, snap_slot: Slot, log=print,
+                 cam_quat: int | None = None, cam_fov: int | None = None):
+        """采集线程。
+
+        ## cam_quat / cam_fov 参数
+
+        相机地址不是永远不变的常量 —— 它由游戏加载时的内存分配顺序决定。
+        同一台电脑同一个模拟器时稳定，但换模拟器版本、换电脑、加载时序
+        不同，地址就会移位（实测：Edge 是 0x405EA750，Netplay 分支
+        配到了 0x405F30E0 附近，相差 0x8B90）。
+
+        **为什么改成构造参数，而不是自己读配置文件**：
+        本文件属于「采集层」，分层守卫（guard.py）只允许它 import
+        math/struct/threading/time + chan/types/gmem。读文件的 json/os
+        会被拦下。所以配置读取的职责放在装配层（engine）和前端
+        （mapper），这里只接收结果。
+
+        传 None = 用内置默认值，行为与改造前完全一致。
+        """
         super().__init__(name="sensor", daemon=True)
         self.get_proc = get_proc
         self.snap_slot = snap_slot
         self.log = log
+
+        # 相机地址：参数 > 内置默认。存成实例属性而不是改模块常量，
+        # 这样 test_core.py 里「CAM_FOV_GUEST == 0x405EA770」那条断言
+        # 仍然成立，默认语义没被动过。
+        self.cam_quat = cam_quat if cam_quat else CAM_QUAT_GUEST
+        self.cam_fov = cam_fov if cam_fov else CAM_FOV_GUEST
+        if cam_quat:
+            log(f"[采集] 使用自定义相机地址 "
+                f"quat=0x{self.cam_quat:012X} fov=0x{self.cam_fov:012X}")
 
         self.running = True
         self._fov = 45.0
@@ -132,6 +159,11 @@ class Sensor(threading.Thread):
         self._confirmed = False
         self._fails = 0
         self._next_probe = 0.0
+        # 「地址可能不对」的告警状态：
+        #   _fails_since_ok  连续失败计数（读到有效数据就清零）
+        #   _warned_dead_addr 是否已经提示过（避免每帧刷屏）
+        self._fails_since_ok = 0
+        self._warned_dead_addr = False
         # 帧率传感器：相机值变化 = 渲染帧边界
         self._frame_seq = 0
         self._frame_dt = 1.0 / 60.0
@@ -225,7 +257,7 @@ class Sensor(threading.Thread):
 
     def _base_ok_now(self, proc, base: int) -> bool:
         try:
-            return self._quat_plausible(proc.read(base + CAM_QUAT_GUEST, 16))
+            return self._quat_plausible(proc.read(base + self.cam_quat, 16))
         except Exception:
             return False
 
@@ -278,19 +310,25 @@ class Sensor(threading.Thread):
         t0 = time.perf_counter()
 
         base = self._host_base(proc)
-        cam = read_cam(proc, base + CAM_FOV_GUEST)
+        cam = read_cam(proc, base + self.cam_fov)
         if cam is None:                     # 撕裂读：重试一次
-            cam = read_cam(proc, base + CAM_FOV_GUEST)
+            cam = read_cam(proc, base + self.cam_fov)
         if cam is None:
             self._stats["bad"] += 1
+            self._maybe_warn_dead_addr()
         else:
+            # 读到有效数据 = 地址是好的。清零失败计数，
+            # 这样「连续失败」的判定不会跨关卡累积（换关时短暂读不到
+            # 是正常的，不该触发整局警告）。
+            if self._fails_since_ok:
+                self._fails_since_ok = 0
             self._tick_frame(cam)
 
         # 每帧读实时 FOV：只驱动输入增益与准星投影，不进闭环。
         # 下限必须够低：主菜单的世界地图/选关界面会把 FOV 压到 8.5° 做放大，
         # 原先卡 15.0 会把它当脏数据丢掉，于是继续拿旧的 45° 算焦距 ——
         # 投影与增益全错，准星就飘到屏幕外。
-        raw = proc.read(base + CAM_FOV_GUEST, 4)
+        raw = proc.read(base + self.cam_fov, 4)
         if raw and len(raw) >= 4:
             v = struct.unpack(">f", raw)[0]
             if v == v and 5.0 <= v <= 130.0:
@@ -312,6 +350,53 @@ class Sensor(threading.Thread):
             frame_dt=self._frame_dt,
         ))
         return FAST_HZ
+
+    def _maybe_warn_dead_addr(self) -> None:
+        """连续读不到相机时，给出「地址可能不对」的明确提示。
+
+        ## 为什么需要这个提示
+
+        相机地址由游戏加载时的内存分配顺序决定。同一台电脑同一个模拟器
+        时稳定，但换模拟器版本、换电脑、加载时序不同就会移位 ——
+        实测 Edge 是 0x405EA750，Netplay 分支配到 0x405F30E0 附近。
+
+        地址不对时，现象是「静默失效」：ok=0、bad 一直涨、摇杆不推、
+        准星不动。玩家看到的只是「这软件坏了」，根本想不到是地址问题，
+        更不知道要去跑定位工具。
+
+        ## 判定策略
+
+        连续失败 **300 次**才提示一次（250Hz 下约 1.2 秒）。
+
+        为什么不更早：换关卡、加载画面里有几秒读不到是正常的，
+        早提示会误报。
+
+        为什么只提示一次：真失效了就会一直失败，每秒刷一条会把控制台
+        淹掉。用户看到一次就够了，修好之后（读到数据）会复位计数，
+        下次再坏才会再次提示。
+
+        ## 为什么在采集层打印
+
+        采集层只 import 了 math/struct/threading/time，没有 os ——
+        分层守卫不允许。所以这里不判断 cam_addr.json 存不存在，
+        只给一句通用的排查指引：两种情况（没配置 / 配置错了）
+        都指向同一个解决方法。
+        """
+        self._fails_since_ok += 1
+        if self._fails_since_ok < 300:
+            return
+        if self._warned_dead_addr:
+            return
+        self._warned_dead_addr = True
+        self.log(
+            "[采集] ! 相机读取持续失败（连续 %d 次）\n"
+            "        可能原因：\n"
+            "          1. 还没进入关卡（菜单/机库/加载画面里相机未初始化）\n"
+            "          2. 相机地址在你这台机器上不一样\n"
+            "        如果是第 2 种，进入关卡后运行：\n"
+            "          python tools\\find_camera.py\n"
+            "        它会扫出真实地址并写进 cam_addr.json，重启 mapper 生效。"
+            % self._fails_since_ok)
 
     def _tick_frame(self, cam) -> None:
         """相机 yaw/pitch 变了 = 游戏出了新的一帧。

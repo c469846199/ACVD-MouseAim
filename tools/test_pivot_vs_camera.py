@@ -69,7 +69,7 @@ def sample(proc, seconds, label):
 
 
 def main():
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     print("=== 三种条件下对比 AIM 与 CAM 的位置行为 ===\n")
 
     print("条件 A：机甲静止、不转动视角（基线 3 秒）")

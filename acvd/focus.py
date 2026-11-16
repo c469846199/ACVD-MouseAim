@@ -62,7 +62,7 @@ def _find_pid_by_prefix(prefix: str) -> int | None:
 
 
 def _find_pid_by_window_title(title_prefix: str) -> int | None:
-    """枚举窗口，按**标题开头**匹配，反查 pid。
+    """枚举窗口，按标题开头匹配，反查 pid。
 
     ## 为什么这条链可靠
 
@@ -77,17 +77,23 @@ def _find_pid_by_window_title(title_prefix: str) -> int | None:
 
     ## 为什么用「开头匹配」而不是「包含匹配」
 
-    Xenia 的窗口标题固定以 `Xenia-edge` 开头：
-
-        Xenia-edge (edge@16aa48a96 on Nov  7 2026) | [4E4D0864 ...]
-
-    而当前环境里恰好有个标题**包含** xenia 但不是它的窗口：
+    当前环境里有个标题**包含** xenia 但不是它的窗口：
 
         Xenia 鼠标视角控制脚本方案 — DeepSeek Harness    ← 浏览器/Harness
 
-    用 `in` 包含匹配会误中后者（实测发生，pid 拿到 22692 而不是 10776）。
-    用 `startswith` 开头匹配就精确了：真目标是 `xenia-edge`，
-    干扰项是 `xenia `（带空格），前缀不同。
+    用 `in` 包含匹配会误中它（实测 pid 拿到 22692 而不是 10776）。
+    开始匹配能排除：真目标标题是 `Xenia-edge` 或 `Xenia-canary-netplay`，
+    干扰项是 `Xenia `（Xenia 后面跟空格），前缀不同。
+
+    ## 为什么前缀参数不能写死
+
+    Xenia 有几个不同分支，窗口标题各不相同：
+
+        Xenia-edge (edge@16aa48a96 on Nov  7 2026)         ← Edge 分支
+        Xenia-canary-netplay (netplay_canary_experimental@b5f6f6ed6 ...)  ← Netplay 分支
+
+    所以调用方传的是 "xenia" 这个**公共开头**，本函数负责排除
+    「xenia 后面跟空格」的干扰项（见 _MATCH_TAIL）。
 
     ## 局限
 
@@ -105,7 +111,11 @@ def _find_pid_by_window_title(title_prefix: str) -> int | None:
             return True
         buf = ctypes.create_unicode_buffer(n + 1)
         user32.GetWindowTextW(hwnd, buf, n + 1)
-        if buf.value.lower().startswith(key):
+        low = buf.value.lower()
+        # 必须以 key 开头，并且紧跟的分隔符不是空格 ——
+        # Xenia 各分支都用连字符连接（xenia-edge / xenia-canary-netplay），
+        # 而人写的标题通常是 "Xenia 鼠标视角..."（空格）。这一条把两者分开。
+        if low.startswith(key) and len(low) > len(key) and not low[len(key)].isspace():
             pid = wt.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
             if pid.value:
@@ -150,7 +160,16 @@ class FocusWatcher:
             ...
     """
 
-    def __init__(self, exe_prefix: str = "xenia_canary", refresh: float = 2.0):
+    def __init__(self, exe_prefix: str = "xenia", refresh: float = 2.0):
+        """追踪 Xenia 的主窗口。
+
+        exe_prefix 用 "xenia" 这个公共前缀就够了 —— 各分支的 exe 名
+        都以它开头（xenia_edge / xenia_canary / xenia_canary_netplay /
+        xenia_canary_mousehook …）。不区分具体分支，也就不会因为
+        换了一个构建版本就找不到进程。
+
+        匹配走「前缀」而不是「全等」，见 _find_pid_by_prefix。
+        """
         self.prefix = exe_prefix
         self.refresh = refresh
         self.pid: int | None = None
@@ -173,10 +192,10 @@ class FocusWatcher:
             #   所以用它反查 pid 是可靠的回退。
             #
             # 代价：进程必须有可见顶层窗口。所以只在枚举失败时才用这条退路。
-            # 标题前缀用 "xenia-edge"（带连字符），这是 xenia_edge.exe 的
-            # 窗口标题固定开头；用 "xenia" 会误中标题以 "Xenia " 开头的
-            # 其它窗口（实测把浏览器的「Xenia 鼠标视角控制脚本方案」认成了目标）。
-            self.pid = _find_pid_by_window_title("xenia-edge")
+            # 传 "xenia" 这个公共开头即可 —— _find_pid_by_window_title 内部
+            # 会排除「xenia 后跟空格」的干扰窗口（比如浏览器标题里提到 Xenia），
+            # 同时兼容各分支的标题（Xenia-edge / Xenia-canary-netplay）。
+            self.pid = _find_pid_by_window_title("xenia")
         self.hwnd = _largest_visible_window(self.pid) if self.pid else 0
         self._next_refresh = time.perf_counter() + self.refresh
 

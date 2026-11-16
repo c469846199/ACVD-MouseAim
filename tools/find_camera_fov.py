@@ -106,7 +106,7 @@ def main() -> int:
     ap.add_argument("--min-mb", type=float, default=1.0)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
 
     if a.region is not None:
         targets = [(a.region, a.size or 0x10000000)]
