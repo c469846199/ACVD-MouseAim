@@ -261,7 +261,9 @@ def run_diag() -> int:
 
     try:
         from acvd.focus import _find_pid_by_window_title
-        wpid = _find_pid_by_window_title("xenia-edge")
+        # 用公共前缀 "xenia"：各分支标题都是 Xenia-edge / Xenia-canary-netplay，
+        # 函数内部会校验 exe 名，排除同名文件夹窗口的干扰。
+        wpid = _find_pid_by_window_title("xenia")
         _say(f"_find_pid_by_window_title(...)    = {wpid}"
              f"    ← 枚举失败时的实际生效路径")
     except Exception:
@@ -280,7 +282,7 @@ def run_diag() -> int:
 
         pid = _find_pid_by_prefix("xenia")
         if pid is None:
-            pid = _find_pid_by_window_title("xenia-edge")
+            pid = _find_pid_by_window_title("xenia")
         if pid is None:
             _say("! 两条路都没找到 Xenia")
         else:
