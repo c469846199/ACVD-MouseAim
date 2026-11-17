@@ -136,15 +136,34 @@ OUT_PATH = os.path.join(_project_root(), "cam_addr.json")
 # 只能先关掉它。
 # ============================================================================
 
-def _find_xenia_config() -> str | None:
-    """从运行中（或刚退出）的 Xenia 进程定位它的配置文件。
+def _find_xenia_config(extra_dir: str | None = None) -> str | None:
+    """定位 Xenia 的配置文件（*.config.toml）。
 
-    优先用进程的 exe 路径 → 同目录找 *.config.toml。
-    进程不在时，尝试常见位置。
+    ## 查找顺序（从准到粗）
+
+        1. 用户显式给的 --xenia-dir
+        2. 运行中的 Xenia 进程 → exe 所在目录（最准）
+        3. 本程序所在目录及其上一级（便携版常把 Xenia 放在一起）
+        4. 各盘符下名字含 xenia 的目录（浅层扫，最多三层）
+
+    ## 为什么 2 之后还要 3、4
+
+    --fix-input 的用途是「键鼠没反应时排查配置」，而那种情况下
+    Xenia 常常**是关着的**（比如刚崩过、或者还没启动）。如果只靠
+    进程路径，这条命令在最需要它的时候正好失效 —— 实测遇到过。
+
+    ## 为什么扫目录要限深度
+
+    全盘递归找 .toml 会卡几分钟。这里最多三层，且只看目录名含
+    xenia 的，几十毫秒内出结果。
     """
-    candidates = []
+    candidates: list[str] = []
 
-    # 1. 从进程拿 exe 路径（最准）
+    # 1. 用户指定
+    if extra_dir:
+        candidates.append(extra_dir)
+
+    # 2. 运行中进程
     pid = _find_pid_by_prefix("xenia") or _find_pid_by_window_title("xenia")
     if pid is not None:
         import subprocess
@@ -155,23 +174,69 @@ def _find_xenia_config() -> str | None:
                 capture_output=True, text=True, timeout=10)
             exe = r.stdout.strip()
             if exe and os.path.exists(exe):
-                d = os.path.dirname(exe)
-                candidates.append(d)
+                candidates.append(os.path.dirname(exe))
         except Exception:
             pass
 
-    # 2. 常见便携位置：本程序旁边、上一级
+    # 3. 本程序旁边
     root = _project_root()
     candidates += [root, os.path.dirname(root)]
 
-    for d in candidates:
+    def _pick(d: str) -> str | None:
         try:
             names = os.listdir(d)
         except OSError:
-            continue
+            return None
         for n in names:
             if n.endswith(".toml") and "config" in n.lower():
-                return os.path.join(d, n)
+                p = os.path.join(d, n)
+                if os.path.isfile(p):
+                    return p
+        return None
+
+    for d in candidates:
+        hit = _pick(d)
+        if hit:
+            return hit
+
+    # 4. 浅扫各盘符：按 glob 找 *.config.toml，路径里必须出现 xenia
+    #
+    # 为什么用 glob 而不是自己写 os.walk：
+    # 实测的目录形状是 D:\Xeniatest1\xenia-netplay\bin_v6.0.0\xenia-*.config.toml
+    # —— 中间那层叫 bin_v6.0.0，名字里没有 xenia，按「目录名含 xenia」过滤
+    # 会整条漏掉。glob 直接按文件路径模式匹配，不看中间层叫什么。
+    import glob
+    import string
+
+    patterns = []
+    for letter in string.ascii_uppercase:
+        drive = f"{letter}:\\"
+        if not os.path.exists(drive):
+            continue
+        patterns += [
+            os.path.join(drive, "*xenia*", "*config*.toml"),
+            os.path.join(drive, "*xenia*", "*", "*config*.toml"),
+            os.path.join(drive, "*", "*xenia*", "*config*.toml"),
+            os.path.join(drive, "*", "*xenia*", "*", "*config*.toml"),
+            os.path.join(drive, "*", "*", "*xenia*", "*config*.toml"),
+        ]
+
+    hits = []
+    for pat in patterns:
+        try:
+            hits += glob.glob(pat)
+        except Exception:
+            continue
+
+    # 去重 + 只保留真文件；优先名字里带 netplay 的（那份才是 netplay 版在用）
+    uniq = []
+    for h in hits:
+        if h not in uniq and os.path.isfile(h):
+            uniq.append(h)
+    if uniq:
+        uniq.sort(key=lambda p: ("netplay" not in os.path.basename(p).lower(), len(p)))
+        return uniq[0]
+
     return None
 
 
@@ -180,7 +245,8 @@ def _read_text(p: str) -> str:
         return f.read()
 
 
-def ensure_xenia_input(verbose: bool = True, auto_fix: bool = False) -> int:
+def ensure_xenia_input(verbose: bool = True, auto_fix: bool = False,
+                       xenia_dir: str | None = None) -> int:
     """检查（可选修正）Xenia 的输入配置。
 
     返回：
@@ -217,7 +283,7 @@ def ensure_xenia_input(verbose: bool = True, auto_fix: bool = False) -> int:
     Xenia 运行期间和退出时都会把内存里的 cvar 写回配置文件。所以在它
     运行时改文件，改动会被覆盖（实测：改完启动，文件立刻变回 "any"）。
     """
-    cfg = _find_xenia_config()
+    cfg = _find_xenia_config(xenia_dir)
     if cfg is None:
         if verbose:
             print("  ⚠ 找不到 Xenia 的配置文件（.toml）")
@@ -473,6 +539,9 @@ def main() -> int:
     ap.add_argument("--fix-input", action="store_true",
                     help="只修正 Xenia 的输入配置（hid=xinput / 键盘不抢端口），"
                          "不做相机定位。键鼠完全没反应时先跑这条")
+    ap.add_argument("--xenia-dir", default=None, metavar="DIR",
+                    help="Xenia 所在目录。自动找不到配置文件时手动指定，"
+                         "例如 --xenia-dir D:\\Xeniatest1\\xenia-netplay\\bin_v6.0.0")
     a = ap.parse_args()
 
     print("=" * 70)
@@ -486,7 +555,8 @@ def main() -> int:
     if a.fix_input:
         print("  只检查 Xenia 输入配置（不定位相机）")
         print()
-        rc = ensure_xenia_input(verbose=True, auto_fix=True)
+        rc = ensure_xenia_input(verbose=True, auto_fix=True,
+                             xenia_dir=a.xenia_dir)
         print()
         if rc == 1:
             print("  配置已修正。请**完全重启 Xenia**，然后进关卡重新运行：")
@@ -636,7 +706,8 @@ def main() -> int:
         print("-" * 70)
         print("  Xenia 输入配置检查")
         print("-" * 70)
-        rc = ensure_xenia_input(verbose=True, auto_fix=False)
+        rc = ensure_xenia_input(verbose=True, auto_fix=False,
+                             xenia_dir=a.xenia_dir)
         print()
 
     print("  完成。检查完上面的提示后正常启动 mapper 即可。")
