@@ -41,7 +41,7 @@ def classify(buf: bytes) -> str:
 
 
 def main() -> int:
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
 
     # 只看 >= 1MB 的已提交私有区 + image 区
     regs = [r for r in proc.regions()

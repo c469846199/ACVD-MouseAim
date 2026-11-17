@@ -75,7 +75,7 @@ def main():
     ap.add_argument("--tol", type=float, default=0.6)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     structs = scan(proc)
     print(f"变换结构 {len(structs)} 个")
 

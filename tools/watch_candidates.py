@@ -54,7 +54,7 @@ def main() -> int:
     ap.add_argument("--hz", type=float, default=30.0)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     series = {k: [] for k in CANDIDATES}
 
     print(f"采样 {a.seconds}s @ {a.hz}Hz。请【快速推右摇杆并回中】，反复几次。")

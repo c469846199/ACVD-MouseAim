@@ -61,7 +61,7 @@ def read_quat(proc, quat_addr):
 
 
 def main():
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
 
     addrs = {}
     for a in BODY_CANDIDATES:

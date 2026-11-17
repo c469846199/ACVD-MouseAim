@@ -18,15 +18,67 @@ import time
 from . import control_v2
 from .chan import Alarm, Slot
 from .output import Composer, Watchdog
-from .sensor import CAM_FOV_GUEST, CAM_QUAT_GUEST, Sensor
+from .sensor import Sensor
 from .types import MODE_OFF, MODE_TRACKING, Cfg, Cmd
+
+
+def _load_cam_addr(path: str | None = None) -> tuple[int, int] | None:
+    """读 cam_addr.json，返回 (quat_guest, fov_guest)。
+
+    ## 为什么放在装配层
+
+    采集层（sensor.py）被分层守卫限制，只许 import
+    math/struct/threading/time + chan/types/gmem，读文件的 json/os
+    会被拦。engine.py 是装配层（Rule 允许 None = 不限制依赖），
+    所以配置读取放在这里，读到之后把结果传给 Sensor。
+
+    ## 相机地址为什么需要外部覆盖
+
+    地址由游戏加载时的内存分配顺序决定。同一台电脑同一个模拟器时稳定，
+    但换模拟器版本、换电脑、加载时序不同就会移位 ——
+    实测：Edge 是 0x405EA750，Netplay 分支配到 0x405F30E0 附近。
+
+    tools/find_camera.py 扫出真实地址后写这个文件，启动时读一次。
+
+    ## 容错
+
+    文件不存在、格式错、数值越界 —— 一律返回 None（用内置默认值），
+    绝不因为配置坏了导致启动失败。
+    """
+    import json
+    import os
+    import sys
+
+    if path is None:
+        # 源码模式：本文件在 <项目根>/acvd/core/，往上三级是项目根。
+        # EXE 模式（PyInstaller onedir）：本文件在
+        # <exe目录>/_internal/acvd/core/，往上三级是 _internal ——
+        # 但 cam_addr.json 写在 exe 同级（用户能看见的位置），
+        # 所以 frozen 时取 sys.executable 的目录。
+        if getattr(sys, "frozen", False):
+            root = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            root = os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))
+        path = os.path.join(root, "cam_addr.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        q = int(d["quat_guest"])
+        fov = int(d.get("fov_guest", q + 0x20))
+        if 0 < q < 0x1_0000_0000 and 0 < fov < 0x1_0000_0000:
+            return q, fov
+    except Exception:
+        pass
+    return None
 
 
 class AimEngine:
     def __init__(self, get_proc, get_delta, get_view, cfg: Cfg | None = None,
                  log=print, hz: float = 125.0,
                  is_paused=None, ctrl: str = "v1",
-                 v2: control_v2.V2Cfg | None = None):
+                 v2: control_v2.V2Cfg | None = None,
+                 cam_addr_path: str | None = None):
         self.log = log
         self._snap = Slot()
         self._cmd = Slot()
@@ -52,7 +104,17 @@ class AimEngine:
             _step = None
             state = None
 
-        self.sensor = Sensor(get_proc, self._snap, log=log)
+        # 相机地址：优先用 cam_addr.json 的覆盖值。
+        # 没配置就用内置默认，行为与改造前完全一致。
+        _cam = _load_cam_addr(cam_addr_path)
+        if _cam is not None:
+            log(f"[采集] 使用自定义相机地址 "
+                f"quat=0x{_cam[0]:012X} fov=0x{_cam[1]:012X}"
+                f"（cam_addr.json）")
+
+        self.sensor = Sensor(get_proc, self._snap, log=log,
+                             cam_quat=_cam[0] if _cam else None,
+                             cam_fov=_cam[1] if _cam else None)
         self.composer = Composer(self._snap, self._cmd, self._out,
                                  get_delta, get_view, cfg or Cfg(), log=log,
                                  is_paused=is_paused,
@@ -171,13 +233,16 @@ class AimEngine:
     def status(self) -> str:
         s = self.snapshot()
         st = self.sensor.stats()
+        # 地址用 sensor 上的实例值，不是模块常量 —— 否则 status 永远
+        # 显示内置默认的 0x405EA750/0x405EA770，即使实际在用 cam_addr.json
+        # 里配置的地址。排查时会误以为「配置没生效」。
         return (f"auto_state={self._PANEL.get(s['mode'], 'idle')} "
                 f"auto_scene=0 auto_cand=1 auto_votes=0 "
-                f"auto_cam=0x{CAM_QUAT_GUEST:012X} "
+                f"auto_cam=0x{self.sensor.cam_quat:012X} "
                 f"auto_try={s['reads']} "
                 f"auto_on={1 if self.enabled else 0} "
                 f"engine_mode={s['mode']} "
-                f"addr=0x{CAM_FOV_GUEST:012X} "
+                f"addr=0x{self.sensor.cam_fov:012X} "
                 f"base=0x{self.sensor.base():012X} "
                 f"ctrl={self.ctrl} tau={self.v2cfg.tau:.3f} "
                 f"fps={self.sensor.fps():.0f} "
@@ -195,10 +260,10 @@ class AimEngine:
             "err_p": f.err_p if f else 0.0,
             "ch_x": f.ch_x if f else 0.0,
             "ch_y": f.ch_y if f else 0.0,
-            "addr": CAM_FOV_GUEST,
+            "addr": self.sensor.cam_fov,
             "cand": 1,
             "votes": 0,
-            "cam": CAM_QUAT_GUEST,
+            "cam": self.sensor.cam_quat,
             "reason": "相机固定",
             "cuts": self.watchdog.cuts,
             "reads": st["reads"],

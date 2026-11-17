@@ -347,9 +347,10 @@ def attach_xenia():
 
     pid = _find_pid_by_prefix("xenia")
     if pid is None:
-        # 窗口标题固定以 "Xenia-edge" 开头（后面是随机的构建/关卡信息），
-        # 用带连字符的前缀匹配，避免误中标题以 "Xenia " 开头的其它窗口。
-        pid = _find_pid_by_window_title("xenia-edge")
+        # 传 "xenia" 这个公共开头：Xenia 各分支的窗口标题都以此开头
+        # （Xenia-edge / Xenia-canary-netplay），而匹配函数内部会排除
+        # 「xenia 后跟空格」的干扰窗口（比如浏览器标题里提到 Xenia）。
+        pid = _find_pid_by_window_title("xenia")
     if pid is None:
         raise RuntimeError("找不到 Xenia 进程（进程枚举与窗口标题匹配都失败）")
     return Process.attach(pid)
@@ -760,8 +761,28 @@ def main() -> int:
 
             if c == "status":
                 with st.lock:
-                    rx, ry = (st.o_rx, st.o_ry) if st.takeover else (
-                        (st.m_rx, st.m_ry) if st.mouse_on else (st.k_rx, st.k_ry))
+                    # 输出源与接管状态：**以 engine 为准**。
+                    #
+                    # 这里修过一个大坑：以前用 `st.takeover` 决定显示哪个摇杆
+                    # 变量，但 st.takeover 只在初始化时置 False，之后再没被
+                    # 改过 —— 于是 status 永远显示 "takeover=off" 和
+                    # 恒为 0 的 m_rx/m_ry。排查时据此判断「没接管、不推杆」
+                    # 全都是错的，白绕一大圈（实际是 halt=on 拦掉的）。
+                    #
+                    # 内核模式下真实的输出是 engine.stick()（它读看门狗），
+                    # 真实的接管状态是 engine.is_tracking()。
+                    if engine is not None:
+                        rx, ry = engine.stick()
+                        tracking = engine.is_tracking()
+                    elif st.takeover:
+                        rx, ry = st.o_rx, st.o_ry
+                        tracking = True
+                    elif st.mouse_on:
+                        rx, ry = st.m_rx, st.m_ry
+                        tracking = False
+                    else:
+                        rx, ry = st.k_rx, st.k_ry
+                        tracking = False
                     chx = chy = 0.0
                     errd = fovd = ""
                     if mouse is not None:
@@ -798,9 +819,10 @@ def main() -> int:
                     elif auto is not None:
                         autod = " " + auto.status()
                     return (f"focused={fw.is_focused()} "
-                            f"L=({st.k_lx:+.2f},{st.k_ly:+.2f}) R=({rx:+.2f},{ry:+.2f}) "
+                            f"L=({st.k_lx:+.2f},{st.k_ly:+.2f}) R=({rx:+.3f},{ry:+.3f}) "
                             f"btn=0x{st.k_btn:04X} lt={st.k_lt:.2f} rt={st.k_rt:.2f} "
-                    f"takeover={'on' if st.takeover else 'off'} "
+                            f"tracking={'on' if tracking else 'off'} "
+                            f"takeover={'on' if st.takeover else 'off'} "
                             f"paused={'on' if st.paused else 'off'} "
                             f"halt={'on' if st.halt else 'off'} "
                             f"force={'on' if st.force else 'off'} "
@@ -1251,7 +1273,41 @@ def main() -> int:
         return v
 
     def _read_delta():
-        """鼠标增量：Raw Input 优先，拿不到退回光标差值。带单帧位移上限。"""
+        """鼠标增量：Raw Input 优先，拿不到退回光标差值。带单帧位移上限。
+
+        ## 为什么失焦时直接返回 0 并且不钉光标
+
+        以前这里无条件把光标 SetCursorPos 回窗口中心。后果是：玩家只要
+        一切换窗口，光标立刻被拽回游戏里，**只能用 F10（全部暂停）逃生**
+        —— 想回浏览器查个东西都不行，而按了 F10 就把整份手柄也停了，
+        看起来就像「视角不动」。
+
+        现在分两种：
+
+            焦点在 Xenia  正常读增量 + 钉光标（闭环的既有行为，不变）
+            焦点不在      返回 (0,0)，**不动光标**
+
+        这样切窗口时光标是自由的，切回来自动恢复闭环，不需要按任何热键。
+
+        ## 为什么不能只放开钉光标、仍然读位移
+
+        光标差值那一路（fallback）是「当前光标 - 上次位置」。切窗口后玩家
+        在浏览器里移动鼠标，这些位移会被当成视角输入灌进闭环，准星会乱飞。
+        所以失焦时必须**两条路一起断**，不只是不钉光标。
+        """
+        if not fw.is_focused():
+            # 失焦：不读、不钉。返回零增量让上游知道这一帧没有输入。
+            #
+            # 必须顺手 drain 掉 Raw Input 的积压：失焦期间玩家可能在别的
+            # 窗口移动鼠标，这些事件攒在缓冲里；等切回来时如果一次性
+            # 消费，视角会"暴冲"一下。丢掉它们才是对的。
+            if raw_ok:
+                try:
+                    raw.drain()
+                except Exception:
+                    pass
+            return 0, 0
+
         dx = dy = 0
         if raw_ok:
             rdx, rdy, nraw, _ = raw.drain()

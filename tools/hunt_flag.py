@@ -102,7 +102,7 @@ def main() -> int:
     ap.add_argument("--max-report", type=int, default=60)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     regions = active_regions(proc, a.min_mb)
     total = sum(r.size for r in regions)
     print(f"区域 {len(regions)} 个，{total/2**20:.0f} MB")

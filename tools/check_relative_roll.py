@@ -71,7 +71,7 @@ def euler_zxy(q):
 
 
 def main() -> int:
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     cli = PipeClient("acvd_pad")
 
     print("扫描推杆全过程，记录 aim/cam/body 的相对 roll\n")

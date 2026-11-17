@@ -39,7 +39,7 @@ def yaw_of(q):
 
 
 def main() -> int:
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
 
     # 读取已记录的火控圈 yaw
     aim_yaw = None

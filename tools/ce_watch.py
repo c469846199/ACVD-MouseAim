@@ -29,7 +29,7 @@ def main() -> int:
     ap.add_argument("--dtype", default="f32", choices=["f32", "f64", "u32", "i32", "u16"])
     ap.add_argument("--hz", type=float, default=20.0)
     ap.add_argument("--seconds", type=float, default=0.0, help="0 = 无限")
-    ap.add_argument("--proc", default="xenia_canary")
+    ap.add_argument("--proc", default="xenia")
     a = ap.parse_args()
 
     fmts = {"f32": "<f", "f64": "<d", "u32": "<I", "i32": "<i", "u16": "<H"}

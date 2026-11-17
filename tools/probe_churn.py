@@ -39,7 +39,7 @@ def main() -> int:
     ap.add_argument("--all", action="store_true", help="含 image 区")
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     regs = [r for r in proc.regions()
             if r.state == 0x1000 and r.writable and r.size >= a.min_mb * 2**20
             and (a.all or r.type == MEM_PRIVATE)]

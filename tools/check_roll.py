@@ -58,7 +58,7 @@ def main() -> int:
     ap.add_argument("--hold", type=float, default=1.5)
     a = ap.parse_args()
 
-    proc = Process.attach("xenia_canary")
+    proc = Process.attach("xenia")
     cli = PipeClient("acvd_pad")
 
     before = {k: decompose(proc, v) for k, v in CANDS.items()}
